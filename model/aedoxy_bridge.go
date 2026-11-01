@@ -176,7 +176,7 @@ func FulfillAedoxySubscription(tradeNo string, userId int, planId int, moneyIdr 
 			return ErrSubscriptionOrderStatusInvalid
 		}
 
-		now := GetDBTimestamp()
+		now := dbTimestampTx(tx)
 		var active []UserSubscription
 		if err := tx.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
 			Order("id asc").Find(&active).Error; err != nil {
@@ -232,4 +232,22 @@ func FulfillAedoxySubscription(tradeNo string, userId int, planId int, moneyIdr 
 		"method": paymentMethod,
 	}))
 	return result, nil
+}
+
+// dbTimestampTx is GetDBTimestamp on the transaction handle, so a tx holding row locks never needs a second pooled connection.
+func dbTimestampTx(tx *gorm.DB) int64 {
+	var ts int64
+	var err error
+	switch {
+	case common.UsingMainDatabase(common.DatabaseTypePostgreSQL):
+		err = tx.Raw("SELECT EXTRACT(EPOCH FROM NOW())::bigint").Scan(&ts).Error
+	case common.UsingMainDatabase(common.DatabaseTypeSQLite):
+		err = tx.Raw("SELECT strftime('%s','now')").Scan(&ts).Error
+	default:
+		err = tx.Raw("SELECT UNIX_TIMESTAMP()").Scan(&ts).Error
+	}
+	if err != nil || ts <= 0 {
+		return common.GetTimestamp()
+	}
+	return ts
 }

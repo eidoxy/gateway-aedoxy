@@ -2,8 +2,11 @@ package model
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -12,25 +15,41 @@ import (
 	"gorm.io/gorm"
 )
 
-// useAedoxyTestDB swaps in a private in-memory database with a multi-connection
-// pool: the shared single-connection test DB deadlocks on GetDBTimestamp, which
-// reads through the global handle while a transaction holds the only connection.
+// useAedoxyTestDB swaps in a private database with a multi-connection pool: the
+// shared single-connection test DB deadlocks on GetDBTimestamp, which reads
+// through the global handle while a transaction holds the only connection.
+// It is in-memory SQLite unless AEDOXY_TEST_DSN holds a mysql or postgres DSN
+// in the SQL_DSN format; the tables are then dropped and recreated per test.
 func useAedoxyTestDB(t *testing.T) {
 	t.Helper()
 	previousDB, previousLogDB := DB, LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
-	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
-	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))), &gorm.Config{})
-	require.NoError(t, err)
+	var db *gorm.DB
+	var err error
+	if os.Getenv("AEDOXY_TEST_DSN") != "" {
+		var dbType common.DatabaseType
+		db, dbType, err = chooseDB("AEDOXY_TEST_DSN", false)
+		require.NoError(t, err)
+		require.NotEqual(t, common.DatabaseTypeSQLite, dbType, "AEDOXY_TEST_DSN must be a mysql or postgres DSN")
+		common.SetDatabaseTypes(dbType, dbType)
+		initCol()
+	} else {
+		common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+		db, err = gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))), &gorm.Config{})
+		require.NoError(t, err)
+	}
 	DB, LOG_DB = db, db
-	require.NoError(t, db.AutoMigrate(&User{}, &Log{}, &TopUp{}, &SubscriptionPlan{}, &SubscriptionOrder{},
-		&UserSubscription{}, &UserOAuthBinding{}, &CustomOAuthProvider{}))
+	tables := []any{&User{}, &Log{}, &TopUp{}, &SubscriptionPlan{}, &SubscriptionOrder{},
+		&UserSubscription{}, &UserOAuthBinding{}, &CustomOAuthProvider{}}
+	require.NoError(t, db.Migrator().DropTable(tables...))
+	require.NoError(t, db.AutoMigrate(tables...))
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxOpenConns(8)
 	t.Cleanup(func() {
 		DB, LOG_DB = previousDB, previousLogDB
 		common.SetDatabaseTypes(previousMain, previousLog)
+		initCol()
 		_ = sqlDB.Close()
 	})
 }
@@ -187,4 +206,75 @@ func TestFulfillAedoxySubscriptionRejectsTradeNoReuse(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAedoxyUserNotFound)
 	_, err = FulfillAedoxySubscription("T-9", buyer.Id, 999999, 100000, "qris")
 	assert.ErrorIs(t, err, ErrAedoxyPlanNotFound)
+}
+
+func TestEnsureAedoxyUserConcurrentSameSubject(t *testing.T) {
+	useAedoxyTestDB(t)
+	provider := seedAedoxyProvider(t)
+
+	const workers = 8
+	ids := make([]int, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			user, _, err := EnsureAedoxyUser("sub-race", "", "Buyer")
+			errs[i] = err
+			if user != nil {
+				ids[i] = user.Id
+			}
+		}()
+	}
+	wg.Wait()
+	for i := range workers {
+		require.NoError(t, errs[i])
+		assert.Equal(t, ids[0], ids[i])
+	}
+	var users, bindings int64
+	require.NoError(t, DB.Model(&User{}).Count(&users).Error)
+	require.NoError(t, DB.Model(&UserOAuthBinding{}).Where("provider_id = ?", provider.Id).Count(&bindings).Error)
+	assert.EqualValues(t, 1, users)
+	assert.EqualValues(t, 1, bindings)
+}
+
+func TestFulfillAedoxySubscriptionConcurrentSameTradeNo(t *testing.T) {
+	useAedoxyTestDB(t)
+	user := seedAedoxyUser(t, "buyer", "")
+	plan := seedAedoxyPlan(t, "Pro", 1000, "")
+
+	// shortcut: CreateUserSubscriptionFromPlanTx still reads time via the global DB, so workers must stay below the pool size (8) or a saturated pool deadlocks; revisit if upstream passes tx.
+	const workers = 4
+	results := make([]*AedoxyFulfillResult, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = FulfillAedoxySubscription("T-race", user.Id, plan.Id, 150000, "qris")
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("concurrent fulfill did not finish in 30s (pool or lock deadlock)")
+	}
+	fresh := 0
+	for i := range workers {
+		require.NoError(t, errs[i])
+		assert.Equal(t, results[0].UserSubscriptionId, results[i].UserSubscriptionId)
+		if !results[i].AlreadyFulfilled {
+			fresh++
+		}
+	}
+	assert.Equal(t, 1, fresh)
+	var subs, orders int64
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.Id).Count(&subs).Error)
+	require.NoError(t, DB.Model(&SubscriptionOrder{}).Where("trade_no = ?", "T-race").Count(&orders).Error)
+	assert.EqualValues(t, 1, subs)
+	assert.EqualValues(t, 1, orders)
 }
