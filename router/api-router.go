@@ -186,6 +186,13 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestCreemPay)
 			subscriptionRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestWaffoPancakePay)
 		}
+		aedoxyRoute := apiRouter.Group("/aedoxy")
+		aedoxyRoute.Use(middleware.AdminAuth())
+		{
+			aedoxyRoute.POST("/accounts/ensure", controller.AedoxyEnsureAccount)
+			aedoxyRoute.POST("/fulfill", controller.AedoxyFulfill)
+		}
+
 		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
 		subscriptionAdminRoute.Use(middleware.AdminAuth())
 		{
