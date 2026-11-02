@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CherryStudio } from '@lobehub/icons'
+// import { CherryStudio } from '@lobehub/icons'
 import { Link } from '@tanstack/react-router'
 import { ArrowRight, BookOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -32,18 +32,18 @@ interface HeroProps {
 }
 
 // Stylized three-dots indicator representing "More"
-const MoreIcon = () => (
-  <svg
-    className='text-muted-foreground/60 group-hover:text-foreground size-6 shrink-0 transition-colors'
-    viewBox='0 0 24 24'
-    fill='none'
-    xmlns='http://www.w3.org/2000/svg'
-  >
-    <circle cx='6' cy='12' r='2' fill='currentColor' />
-    <circle cx='12' cy='12' r='2' fill='currentColor' />
-    <circle cx='18' cy='12' r='2' fill='currentColor' />
-  </svg>
-)
+// const MoreIcon = () => (
+//   <svg
+//     className='text-muted-foreground/60 group-hover:text-foreground size-6 shrink-0 transition-colors'
+//     viewBox='0 0 24 24'
+//     fill='none'
+//     xmlns='http://www.w3.org/2000/svg'
+//   >
+//     <circle cx='6' cy='12' r='2' fill='currentColor' />
+//     <circle cx='12' cy='12' r='2' fill='currentColor' />
+//     <circle cx='18' cy='12' r='2' fill='currentColor' />
+//   </svg>
+// )
 
 export function Hero(props: HeroProps) {
   const { t } = useTranslation()

@@ -16,8 +16,8 @@ version: '3.4' # For compatibility with older Docker versions
 
 services:
   new-api:
-    image: ghcr.io/eidoxy/obersai-app:latest
-    container_name: obersai
+    image: ghcr.io/eidoxy/gateway-aedoxy:latest
+    container_name: gateway-aedoxy
     restart: always
     command: --log-dir /app/logs
     volumes:
@@ -66,7 +66,7 @@ services:
 
   caddy:
     image: caddy:2-alpine
-    container_name: obersai-caddy
+    container_name: gateway-aedoxy-caddy
     restart: always
     ports:
       - "80:80"
