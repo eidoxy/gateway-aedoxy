@@ -232,6 +232,11 @@ var (
 	CriticalRateLimitNum            = 20
 	CriticalRateLimitDuration int64 = 20 * 60
 
+	// Session refresh and logout run on every console page load, so they get
+	// their own looser per-IP bucket and never drain the login budget.
+	SessionRateLimitNum            = 120
+	SessionRateLimitDuration int64 = 60
+
 	UploadRateLimitNum            = 10
 	UploadRateLimitDuration int64 = 60
 

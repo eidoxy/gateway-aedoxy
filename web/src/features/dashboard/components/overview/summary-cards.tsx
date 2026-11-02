@@ -24,9 +24,11 @@ import { useTranslation } from 'react-i18next'
 
 import { StaggerContainer, StaggerItem } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { getUserQuotaDates } from '@/features/dashboard/api'
 import { useSummaryCardsConfig } from '@/features/dashboard/hooks/use-dashboard-config'
 import type { QuotaDataItem } from '@/features/dashboard/types'
+import { usePlanCreditStat } from '@/features/subscriptions/hooks/use-plan-credit'
 import { useStatus } from '@/hooks/use-status'
 import { getCurrencyLabel, isCurrencyDisplayEnabled } from '@/lib/currency'
 import { formatNumber, formatQuota } from '@/lib/format'
@@ -143,7 +145,11 @@ export function SummaryCards() {
   const { status, loading } = useStatus()
 
   const summaryTimeRange = useMemo(() => computeTimeRange(1), [])
-  const remainQuota = Number(user?.quota ?? 0)
+  const walletQuota = Number(user?.quota ?? 0)
+  const planCredit = usePlanCreditStat(walletQuota)
+  const unlimitedPlan = planCredit.credit?.unlimited === true
+  // Plan credit is spent first (or alone), so the runway counts both.
+  const remainQuota = walletQuota + (planCredit.credit?.remaining ?? 0)
   const usedQuota = Number(user?.used_quota ?? 0)
   const requestCount = Number(user?.request_count ?? 0)
 
@@ -209,9 +215,13 @@ export function SummaryCards() {
     [usageTrendQuery.data?.data]
   )
 
-  const healthLevel = getHealthLevel(remainQuota, recentUsage)
+  const healthLevel: HealthLevel = unlimitedPlan
+    ? 'healthy'
+    : getHealthLevel(remainQuota, recentUsage)
   const healthCfg = HEALTH_CONFIG[healthLevel]
-  const runwayDays = getRunwayDays(remainQuota, recentUsage)
+  const runwayDays = unlimitedPlan
+    ? null
+    : getRunwayDays(remainQuota, recentUsage)
 
   const todayUsageDisplay = formatQuota(recentUsage)
   let runwayDisplay: string
@@ -223,6 +233,8 @@ export function SummaryCards() {
     } else {
       runwayDisplay = `~${formatNumber(Math.floor(runwayDays))} ${t('days')}`
     }
+  } else if (unlimitedPlan) {
+    runwayDisplay = t('Unlimited')
   } else if (remainQuota <= 0) {
     runwayDisplay = t('Balance depleted')
   } else {
@@ -292,7 +304,7 @@ export function SummaryCards() {
           <div className='flex flex-col gap-2 sm:gap-3'>
             <div className='flex items-center justify-between'>
               <span className='text-muted-foreground text-xs font-medium'>
-                {t('Credit remaining')}
+                {planCredit.stat?.label ?? t('Credit remaining')}
               </span>
               <span className='flex items-center gap-1.5'>
                 <span
@@ -306,8 +318,17 @@ export function SummaryCards() {
             </div>
 
             <div className='font-mono text-xl font-semibold tracking-tight sm:text-2xl'>
-              {formatQuota(remainQuota)}
+              {planCredit.isLoading ? (
+                <Skeleton className='h-7 w-28 sm:h-8' />
+              ) : (
+                (planCredit.stat?.value ?? formatQuota(walletQuota))
+              )}
             </div>
+            {planCredit.stat && (
+              <div className='text-muted-foreground -mt-1 text-[11px] font-medium'>
+                {planCredit.stat.description}
+              </div>
+            )}
 
             <div className='grid grid-cols-2 gap-2'>
               <div className='bg-background/60 rounded-lg px-2.5 py-2'>

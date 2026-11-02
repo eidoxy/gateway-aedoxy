@@ -194,6 +194,14 @@ func CriticalRateLimit() func(c *gin.Context) {
 	return defNext
 }
 
+// SessionRateLimit throttles /user/auth/refresh and /user/auth/logout per IP
+// in a bucket separate from CriticalRateLimit, so routine session upkeep
+// cannot lock users out of login (ASVS 5.0 V6.3.1 stays enforced on login).
+// It stays active even when CRITICAL_RATE_LIMIT_ENABLE is false.
+func SessionRateLimit() func(c *gin.Context) {
+	return rateLimitFactory(common.SessionRateLimitNum, common.SessionRateLimitDuration, "SS")
+}
+
 func UserCriticalRateLimit(scope string) func(c *gin.Context) {
 	if !common.CriticalRateLimitEnable {
 		return defNext

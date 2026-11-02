@@ -235,6 +235,13 @@ it.each([
   [{ error: 'String error' }, 'String error'],
   [{ title: 'Response title' }, 'Response title'],
   [{ response: { status: 304, data: {} } }, 'Content not modified!'],
+  [
+    {
+      response: { status: 429, data: '' },
+      message: 'Request failed with status code 429',
+    },
+    'Too many attempts. Please try again in a moment.',
+  ],
   [{ message: ' ' }, 'Operation failed'],
   [null, 'Operation failed'],
   [{ response: { data: '<html>proxy error</html>' } }, 'Operation failed'],

@@ -128,8 +128,42 @@ export async function executeLogout(
   }
 }
 
-// User logout
-export async function logout(): Promise<ApiResponse> {
+let logoutInFlight: Promise<ApiResponse> | null = null
+let logoutBlock: { until: number; error: unknown } | null = null
+const DEFAULT_LOGOUT_BACKOFF_MS = 5_000
+
+/**
+ * Share one in-flight logout and stop calling the server for a while after it
+ * answers 429, so rapid clicks cannot turn a rate limit into a request storm.
+ */
+export function logout(): Promise<ApiResponse> {
+  if (logoutInFlight) return logoutInFlight
+  if (logoutBlock && Date.now() < logoutBlock.until) {
+    return Promise.reject(logoutBlock.error)
+  }
+  logoutBlock = null
+  logoutInFlight = requestLogout()
+    .catch((error: unknown) => {
+      if (axios.isAxiosError(error) && error.response?.status === 429) {
+        const retryAfter = Number(error.response.headers?.['retry-after'])
+        logoutBlock = {
+          until:
+            Date.now() +
+            (retryAfter > 0
+              ? Math.min(retryAfter, 60) * 1000
+              : DEFAULT_LOGOUT_BACKOFF_MS),
+          error,
+        }
+      }
+      throw error
+    })
+    .finally(() => {
+      logoutInFlight = null
+    })
+  return logoutInFlight
+}
+
+async function requestLogout(): Promise<ApiResponse> {
   return executeLogout({
     getExpectedSID: () => useAuthStore.getState().auth.session?.sid,
     request: async (sid) => {

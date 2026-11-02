@@ -1,5 +1,5 @@
-ai.obersa.my.id {
-    reverse_proxy new-api:3000 {
+ai.aedoxy.com {
+    reverse_proxy new-api:3100 {
         flush_interval -1
     }
 }

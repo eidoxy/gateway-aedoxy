@@ -290,3 +290,43 @@ func TestGlobalWebRateLimitCountsFrontendFilesInStaticBucket(t *testing.T) {
 		assert.Equal(t, "1", webCount)
 	})
 }
+
+func TestSessionRateLimitIsIndependentFromCriticalBucket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousEnable, previousNum, previousDuration := common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration
+	previousSessionNum, previousSessionDuration := common.SessionRateLimitNum, common.SessionRateLimitDuration
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false // exercise the in-memory limiter used by local configurations
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration = previousEnable, previousNum, previousDuration
+		common.SessionRateLimitNum, common.SessionRateLimitDuration = previousSessionNum, previousSessionDuration
+	})
+	common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration = true, 2, 1200
+	common.SessionRateLimitNum, common.SessionRateLimitDuration = 5, 60
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	ok := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+	router.GET("/login", CriticalRateLimit(), ok)
+	router.GET("/refresh", SessionRateLimit(), ok)
+	router.GET("/logout", SessionRateLimit(), ok)
+
+	const addr = "192.0.2.80:12345"
+	for range 2 {
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/login", addr).Code)
+	}
+	assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/login", addr).Code, "login stays strict")
+
+	// Refresh and logout share their own bucket and survive an exhausted login bucket.
+	for range 3 {
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/refresh", addr).Code)
+	}
+	for range 2 {
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/logout", addr).Code)
+	}
+	limited := performRateLimitRequest(router, "/refresh", addr)
+	assert.Equal(t, http.StatusTooManyRequests, limited.Code, "session bucket is still bounded")
+	assert.Equal(t, "60", limited.Header().Get("Retry-After"))
+	assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/login", addr).Code)
+}

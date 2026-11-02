@@ -24,6 +24,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { usePlanCreditStat } from '@/features/subscriptions/hooks/use-plan-credit'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatCompactNumber, formatQuota } from '@/lib/format'
 import { getRoleLabel } from '@/lib/roles'
@@ -42,6 +43,7 @@ interface ProfileHeaderProps {
 
 export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
   const { t } = useTranslation()
+  const planCredit = usePlanCreditStat(profile?.quota ?? 0)
 
   if (loading) {
     return (
@@ -90,6 +92,7 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
     description: string
     icon: typeof WalletCards
     tone: IconBadgeTone
+    pending?: boolean
   }[] = [
     {
       label: t('Current Balance'),
@@ -97,6 +100,8 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
       description: t('Remaining quota'),
       icon: WalletCards,
       tone: 'success',
+      pending: planCredit.isLoading,
+      ...planCredit.stat,
     },
     {
       label: t('Total Usage'),
@@ -176,7 +181,7 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
               </div>
 
               <div className='text-foreground mt-1.5 truncate font-mono text-lg font-bold tracking-tight tabular-nums sm:mt-2 sm:text-2xl'>
-                {item.value}
+                {item.pending ? <Skeleton className='h-7 w-24' /> : item.value}
               </div>
               <div className='text-muted-foreground/60 mt-1 hidden text-xs md:block'>
                 {item.description}
