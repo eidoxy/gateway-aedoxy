@@ -51,7 +51,7 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            cd ~/obersai-app
+            cd ~/aedoxy-web
             sudo docker compose pull new-api
             sudo docker compose up -d --no-deps new-api
             sudo docker image prune -f
