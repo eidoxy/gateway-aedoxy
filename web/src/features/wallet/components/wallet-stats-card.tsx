@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { usePlanCreditStat } from '@/features/subscriptions/hooks/use-plan-credit'
 import { formatQuota } from '@/lib/format'
 
 import type { UserWalletData } from '../types'
@@ -32,6 +33,7 @@ interface WalletStatsCardProps {
 
 export function WalletStatsCard(props: WalletStatsCardProps) {
   const { t } = useTranslation()
+  const planCredit = usePlanCreditStat(props.user?.quota ?? 0)
   if (props.loading) {
     return (
       <div className='grid grid-cols-3 divide-x rounded-lg border'>
@@ -52,6 +54,7 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
     description: string
     icon: typeof WalletCards
     tone: IconBadgeTone
+    pending?: boolean
   }[] = [
     {
       label: t('Current Balance'),
@@ -59,6 +62,8 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
       description: t('Remaining quota'),
       icon: WalletCards,
       tone: 'success',
+      pending: planCredit.isLoading,
+      ...planCredit.stat,
     },
     {
       label: t('Total Usage'),
@@ -90,7 +95,11 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
           </div>
 
           <div className='text-foreground mt-1.5 font-mono text-sm font-bold tracking-tight break-all tabular-nums sm:mt-2.5 sm:text-2xl'>
-            {item.value}
+            {item.pending ? (
+              <Skeleton className='h-6 w-20 sm:h-7' />
+            ) : (
+              item.value
+            )}
           </div>
           <div className='text-muted-foreground/60 mt-1 hidden text-xs md:block'>
             {item.description}
