@@ -23,7 +23,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { api, type RefreshOutcome } from '@/lib/api'
 import type { AuthBundle } from '@/stores/auth-store'
 
-import { executeLogout } from './api'
+import { executeLogout, logout } from './api'
 import { useOAuthLogin } from './hooks/use-oauth-login'
 import { consumeOAuthLoginRedirect } from './lib/oauth-callback-mode'
 
@@ -177,5 +177,30 @@ describe('logout coordination', () => {
         refresh: async () => transient,
       })
     ).rejects.toBe(originalError)
+  })
+})
+
+describe('logout request storm protection', () => {
+  afterEach(() => vi.useRealTimers())
+
+  test('shares one in-flight request and backs off after a 429 response', async () => {
+    vi.useFakeTimers()
+    const rateLimited = {
+      isAxiosError: true,
+      response: { status: 429, headers: { 'retry-after': '30' } },
+    }
+    const post = vi.spyOn(api, 'post').mockRejectedValue(rateLimited)
+
+    const burst = await Promise.allSettled([logout(), logout(), logout()])
+    expect(burst.every((result) => result.status === 'rejected')).toBe(true)
+    expect(post).toHaveBeenCalledTimes(1)
+
+    await expect(logout()).rejects.toBe(rateLimited)
+    expect(post).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(30_001)
+    post.mockResolvedValue({ data: { success: true } })
+    await expect(logout()).resolves.toEqual({ success: true })
+    expect(post).toHaveBeenCalledTimes(2)
   })
 })
