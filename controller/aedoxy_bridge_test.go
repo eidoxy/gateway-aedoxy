@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,16 +87,55 @@ func TestAedoxyBridgeUsernameAndStatus(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, code)
 }
 
-// TestAedoxyRootSurvivesPasswordLoginDisabled covers the console runbook: with
-// password login and registration switched off, the bound root still enters
-// through the Aedoxy provider, and the options table is the way back.
-func TestAedoxyRootSurvivesPasswordLoginDisabled(t *testing.T) {
+// setupBoundAedoxyRoot makes the fixture user a root bound to the Aedoxy provider as subject "sub-root".
+func setupBoundAedoxyRoot(t *testing.T) (*model.User, *model.CustomOAuthProvider) {
+	t.Helper()
 	root, _ := setupSecurityEnrollmentTest(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.CustomOAuthProvider{}))
 	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", root.Id).Update("role", common.RoleRootUser).Error)
 	provider := &model.CustomOAuthProvider{Name: "Aedoxy", Slug: model.AedoxyOAuthSlug}
 	require.NoError(t, model.DB.Create(provider).Error)
 	require.NoError(t, model.CreateUserOAuthBinding(&model.UserOAuthBinding{UserId: root.Id, ProviderId: provider.Id, ProviderUserId: "sub-root"}))
+	return root, provider
+}
+
+func loginViaAedoxy(provider *model.CustomOAuthProvider) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/aedoxy", nil)
+	handleOAuthLogin(c, oauth.NewGenericOAuthProvider(provider), &oauth.OAuthUser{ProviderUserID: "sub-root"}, &oauth.OAuthToken{}, &model.AuthFlow{Payload: "{}"})
+	return recorder
+}
+
+// TestAedoxyRootPasskeyBecomesLoginFactor documents a runbook warning: a root with
+// a passkey must pass it on every login, Aedoxy included, so it has to stay enabled.
+func TestAedoxyRootPasskeyBecomesLoginFactor(t *testing.T) {
+	root, provider := setupBoundAedoxyRoot(t)
+	newSecurityLoginPasskey(t, root.Id)
+
+	assert.Contains(t, loginViaAedoxy(provider).Body.String(), `"require_verification":true`)
+
+	settings := system_setting.GetPasskeySettings()
+	settings.Enabled = false
+	blocked := loginViaAedoxy(provider).Body.String()
+	assert.Contains(t, blocked, `"success":false`)
+	assert.NotContains(t, blocked, `"access_token"`)
+
+	// Runbook recovery for a lost device: the factor state is read from the tables on every login.
+	require.NoError(t, model.DB.Exec(`DELETE FROM passkey_credentials WHERE user_id = ?`, root.Id).Error)
+	assert.Contains(t, loginViaAedoxy(provider).Body.String(), `"access_token"`)
+
+	require.NoError(t, model.DB.Create(&model.TwoFA{UserId: root.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
+	assert.Contains(t, loginViaAedoxy(provider).Body.String(), `"require_verification":true`)
+	require.NoError(t, model.DB.Exec(`UPDATE two_fas SET is_enabled = false WHERE user_id = ?`, root.Id).Error)
+	assert.Contains(t, loginViaAedoxy(provider).Body.String(), `"access_token"`)
+}
+
+// TestAedoxyRootSurvivesPasswordLoginDisabled covers the console runbook: with
+// password login and registration switched off, the bound root still enters
+// through the Aedoxy provider, and the options table is the way back.
+func TestAedoxyRootSurvivesPasswordLoginDisabled(t *testing.T) {
+	root, provider := setupBoundAedoxyRoot(t)
 
 	previousLogin, previousPasswordRegister, previousRegister := common.PasswordLoginEnabled, common.PasswordRegisterEnabled, common.RegisterEnabled
 	common.OptionMapRWMutex.Lock()
@@ -111,13 +151,7 @@ func TestAedoxyRootSurvivesPasswordLoginDisabled(t *testing.T) {
 	passwordLogin := func() *httptest.ResponseRecorder {
 		return securityEnrollmentRequest("POST", "/api/user/login", `{"username":"enrollment-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, Login)
 	}
-	aedoxyLogin := func() *httptest.ResponseRecorder {
-		recorder := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(recorder)
-		c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/aedoxy", nil)
-		handleOAuthLogin(c, oauth.NewGenericOAuthProvider(provider), &oauth.OAuthUser{ProviderUserID: "sub-root"}, &oauth.OAuthToken{}, &model.AuthFlow{Payload: "{}"})
-		return recorder
-	}
+	aedoxyLogin := func() *httptest.ResponseRecorder { return loginViaAedoxy(provider) }
 
 	// The owner switches both off in the console, which stores them in options.
 	for _, option := range []model.Option{{Key: "PasswordLoginEnabled", Value: "false"}, {Key: "PasswordRegisterEnabled", Value: "false"}} {
