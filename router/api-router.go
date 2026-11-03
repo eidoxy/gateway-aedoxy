@@ -190,6 +190,7 @@ func SetApiRouter(router *gin.Engine) {
 		aedoxyRoute.Use(middleware.AdminAuth())
 		{
 			aedoxyRoute.POST("/accounts/ensure", controller.AedoxyEnsureAccount)
+			aedoxyRoute.POST("/accounts/status", controller.AedoxyAccountStatus)
 			aedoxyRoute.POST("/fulfill", controller.AedoxyFulfill)
 		}
 

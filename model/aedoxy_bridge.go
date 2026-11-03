@@ -28,6 +28,7 @@ var (
 	ErrAedoxyOrderConflict   = errors.New("trade_no belongs to a different user, plan or provider")
 	ErrAedoxyPlanNotFound    = errors.New("subscription plan not found")
 	ErrAedoxyUserNotFound    = errors.New("user not found")
+	ErrAedoxyUserProtected   = errors.New("administrator accounts cannot be disabled through the bridge")
 )
 
 type AedoxyReplacedSubscription struct {
@@ -44,8 +45,10 @@ type AedoxyFulfillResult struct {
 
 // EnsureAedoxyUser returns the console user bound to an Aedoxy account subject,
 // creating the user and its OAuth binding on first use. Users are never matched
-// by email: a console email is not proof of owning the Aedoxy account.
-func EnsureAedoxyUser(subject string, email string, displayName string) (*User, bool, error) {
+// by email: a console email is not proof of owning the Aedoxy account. A
+// non-empty username is tried first for a new user; if it is taken, a random
+// one is used. An existing binding keeps its user and username unchanged.
+func EnsureAedoxyUser(subject string, email string, displayName string, username string) (*User, bool, error) {
 	provider, err := GetCustomOAuthProviderBySlug(AedoxyOAuthSlug)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -81,7 +84,10 @@ func EnsureAedoxyUser(subject string, email string, displayName string) (*User, 
 	}
 
 	for range aedoxyCreateAttempts {
-		user.Username = "aedoxy_" + common.GetRandomString(aedoxyUsernameRandomLen)
+		if username == "" {
+			username = "aedoxy_" + common.GetRandomString(aedoxyUsernameRandomLen)
+		}
+		user.Username = username
 		err = DB.Transaction(func(tx *gorm.DB) error {
 			if err := user.InsertWithTx(tx, 0); err != nil {
 				return err
@@ -105,12 +111,55 @@ func EnsureAedoxyUser(subject string, email string, displayName string) (*User, 
 			user.Email = ""
 			continue
 		}
-		// Retry only a username collision; any other failure is final.
+		// Retry only a username collision, with a random name; any other failure is final.
 		if taken, checkErr := CheckUserExistOrDeleted(user.Username, ""); checkErr != nil || !taken {
 			return nil, false, err
 		}
+		username = ""
 	}
 	return nil, false, err
+}
+
+// SetAedoxyUserEnabled enables or disables the console user bound to an Aedoxy
+// account subject. It goes through User.Update like the admin path, which bumps
+// the auth version, refreshes the user cache and revokes browser sessions. It is
+// idempotent: changed is false when the user already has that status.
+func SetAedoxyUserEnabled(subject string, enabled bool) (*User, bool, error) {
+	provider, err := GetCustomOAuthProviderBySlug(AedoxyOAuthSlug)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, ErrAedoxyProviderMissing
+		}
+		return nil, false, err
+	}
+	user, err := GetUserByOAuthBinding(provider.Id, subject)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, ErrAedoxyUserNotFound
+		}
+		return nil, false, err
+	}
+
+	status := common.UserStatusDisabled
+	if enabled {
+		status = common.UserStatusEnabled
+	}
+	if user.Status == status {
+		return user, false, nil
+	}
+	if !enabled && user.Role >= common.RoleAdminUser {
+		return nil, false, ErrAedoxyUserProtected
+	}
+
+	// Only the status is set: Updates(struct) skips zero fields.
+	updated := &User{Id: user.Id, Status: status}
+	if err := updated.Update(false); err != nil {
+		return nil, false, err
+	}
+	if err := InvalidateUserTokensCache(user.Id); err != nil {
+		common.SysLog(common.LogText("failed to invalidate tokens cache for user %d: %s", user.Id, err.Error()))
+	}
+	return updated, true, nil
 }
 
 // FulfillAedoxySubscription activates the plan of a paid storefront order. It is

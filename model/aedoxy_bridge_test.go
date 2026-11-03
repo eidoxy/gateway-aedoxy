@@ -40,7 +40,7 @@ func useAedoxyTestDB(t *testing.T) {
 	}
 	DB, LOG_DB = db, db
 	tables := []any{&User{}, &Log{}, &TopUp{}, &SubscriptionPlan{}, &SubscriptionOrder{},
-		&UserSubscription{}, &UserOAuthBinding{}, &CustomOAuthProvider{}}
+		&UserSubscription{}, &UserOAuthBinding{}, &CustomOAuthProvider{}, &UserSession{}}
 	require.NoError(t, db.Migrator().DropTable(tables...))
 	require.NoError(t, db.AutoMigrate(tables...))
 	sqlDB, err := db.DB()
@@ -93,7 +93,7 @@ func TestEnsureAedoxyUserCreatesUserAndBinding(t *testing.T) {
 	useAedoxyTestDB(t)
 	provider := seedAedoxyProvider(t)
 
-	user, created, err := EnsureAedoxyUser("sub-1", "Buyer@Example.com", "Buyer")
+	user, created, err := EnsureAedoxyUser("sub-1", "Buyer@Example.com", "Buyer", "")
 	require.NoError(t, err)
 	assert.True(t, created)
 	assert.Equal(t, "buyer@example.com", user.Email)
@@ -108,16 +108,16 @@ func TestEnsureAedoxyUserIsIdempotentPerSubject(t *testing.T) {
 	useAedoxyTestDB(t)
 	seedAedoxyProvider(t)
 
-	first, created, err := EnsureAedoxyUser("sub-1", "", "Buyer")
+	first, created, err := EnsureAedoxyUser("sub-1", "", "Buyer", "")
 	require.NoError(t, err)
 	require.True(t, created)
 
-	second, created, err := EnsureAedoxyUser("sub-1", "", "Buyer")
+	second, created, err := EnsureAedoxyUser("sub-1", "", "Buyer", "")
 	require.NoError(t, err)
 	assert.False(t, created)
 	assert.Equal(t, first.Id, second.Id)
 
-	other, created, err := EnsureAedoxyUser("sub-2", "", "Buyer")
+	other, created, err := EnsureAedoxyUser("sub-2", "", "Buyer", "")
 	require.NoError(t, err)
 	assert.True(t, created)
 	assert.NotEqual(t, first.Id, other.Id)
@@ -128,7 +128,7 @@ func TestEnsureAedoxyUserNeverAttachesByEmail(t *testing.T) {
 	seedAedoxyProvider(t)
 	existing := seedAedoxyUser(t, "existing", "shared@example.com")
 
-	user, created, err := EnsureAedoxyUser("sub-1", "shared@example.com", "Buyer")
+	user, created, err := EnsureAedoxyUser("sub-1", "shared@example.com", "Buyer", "")
 	require.NoError(t, err)
 	assert.True(t, created)
 	assert.NotEqual(t, existing.Id, user.Id)
@@ -138,7 +138,7 @@ func TestEnsureAedoxyUserNeverAttachesByEmail(t *testing.T) {
 func TestEnsureAedoxyUserRequiresProvider(t *testing.T) {
 	useAedoxyTestDB(t)
 
-	_, _, err := EnsureAedoxyUser("sub-1", "", "Buyer")
+	_, _, err := EnsureAedoxyUser("sub-1", "", "Buyer", "")
 	assert.ErrorIs(t, err, ErrAedoxyProviderMissing)
 }
 
@@ -220,7 +220,7 @@ func TestEnsureAedoxyUserConcurrentSameSubject(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			user, _, err := EnsureAedoxyUser("sub-race", "", "Buyer")
+			user, _, err := EnsureAedoxyUser("sub-race", "", "Buyer", "")
 			errs[i] = err
 			if user != nil {
 				ids[i] = user.Id
@@ -277,4 +277,103 @@ func TestFulfillAedoxySubscriptionConcurrentSameTradeNo(t *testing.T) {
 	require.NoError(t, DB.Model(&SubscriptionOrder{}).Where("trade_no = ?", "T-race").Count(&orders).Error)
 	assert.EqualValues(t, 1, subs)
 	assert.EqualValues(t, 1, orders)
+}
+
+func TestEnsureAedoxyUserUsesRequestedUsername(t *testing.T) {
+	useAedoxyTestDB(t)
+	seedAedoxyProvider(t)
+
+	user, created, err := EnsureAedoxyUser("sub-1", "", "Buyer", "buyer_one")
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "buyer_one", user.Username)
+
+	// A repeat call keeps the stored username, whatever the caller now asks for.
+	again, created, err := EnsureAedoxyUser("sub-1", "", "Buyer", "other_name")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, user.Id, again.Id)
+	assert.Equal(t, "buyer_one", again.Username)
+
+	// A taken name, including one held by a soft-deleted user, falls back to a random one.
+	taken, created, err := EnsureAedoxyUser("sub-2", "", "Buyer", "buyer_one")
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.True(t, strings.HasPrefix(taken.Username, "aedoxy_"), taken.Username)
+
+	gone := seedAedoxyUser(t, "gone_name", "")
+	require.NoError(t, DB.Delete(gone).Error)
+	fallback, _, err := EnsureAedoxyUser("sub-3", "", "Buyer", "gone_name")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(fallback.Username, "aedoxy_"), fallback.Username)
+
+	// An email conflict drops the email, not the requested username.
+	seedAedoxyUser(t, "email_owner", "shared@example.com")
+	kept, _, err := EnsureAedoxyUser("sub-4", "shared@example.com", "Buyer", "kept_name")
+	require.NoError(t, err)
+	assert.Equal(t, "kept_name", kept.Username)
+	assert.Empty(t, kept.Email)
+}
+
+func TestSetAedoxyUserEnabled(t *testing.T) {
+	useAedoxyTestDB(t)
+	setupUserSessionTest(t)
+	seedAedoxyProvider(t)
+
+	user, _, err := EnsureAedoxyUser("sub-1", "", "Buyer", "")
+	require.NoError(t, err)
+	now := time.Now().Unix()
+	require.NoError(t, CreateUserSession(newTestUserSession("sid-1", user.Id, now)))
+
+	disabled, changed, err := SetAedoxyUserEnabled("sub-1", false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, common.UserStatusDisabled, disabled.Status)
+	// GetUserCache is what the relay token auth reads to refuse a banned user.
+	cached, err := GetUserCache(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, common.UserStatusDisabled, cached.Status)
+	session, err := GetUserSessionBySID("sid-1")
+	require.NoError(t, err)
+	assert.Equal(t, UserSessionStatusRevoked, session.Status)
+
+	_, changed, err = SetAedoxyUserEnabled("sub-1", false)
+	require.NoError(t, err)
+	assert.False(t, changed)
+
+	enabled, changed, err := SetAedoxyUserEnabled("sub-1", true)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, common.UserStatusEnabled, enabled.Status)
+	cached, err = GetUserCache(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, common.UserStatusEnabled, cached.Status)
+	_, changed, err = SetAedoxyUserEnabled("sub-1", true)
+	require.NoError(t, err)
+	assert.False(t, changed)
+
+	_, _, err = SetAedoxyUserEnabled("unknown", false)
+	assert.ErrorIs(t, err, ErrAedoxyUserNotFound)
+}
+
+func TestSetAedoxyUserEnabledProtectsAdministrators(t *testing.T) {
+	useAedoxyTestDB(t)
+	seedAedoxyProvider(t)
+
+	admin, _, err := EnsureAedoxyUser("sub-admin", "", "Admin", "")
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", admin.Id).Update("role", common.RoleAdminUser).Error)
+
+	_, changed, err := SetAedoxyUserEnabled("sub-admin", false)
+	assert.ErrorIs(t, err, ErrAedoxyUserProtected)
+	assert.False(t, changed)
+	var stored User
+	require.NoError(t, DB.First(&stored, admin.Id).Error)
+	assert.Equal(t, common.UserStatusEnabled, stored.Status)
+
+	// Re-enabling an administrator disabled elsewhere stays allowed.
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", admin.Id).Update("status", common.UserStatusDisabled).Error)
+	_, changed, err = SetAedoxyUserEnabled("sub-admin", true)
+	require.NoError(t, err)
+	assert.True(t, changed)
 }

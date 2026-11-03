@@ -145,6 +145,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 
 	// router/api-router.go: /api/aedoxy
 	"POST /api/aedoxy/accounts/ensure": accessTokenScopeRule("user:write"),
+	"POST /api/aedoxy/accounts/status": accessTokenScopeRule("user:write"),
 	"POST /api/aedoxy/fulfill":         accessTokenScopeRule("billing:write"),
 
 	// router/api-router.go: /api/option

@@ -14,12 +14,21 @@ import (
 
 // Machine API for the aedoxy.com storefront; errors are plain English, not console messages.
 
-var aedoxyTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
+var (
+	aedoxyTradeNoPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
+	aedoxyUsernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,20}$`)
+)
 
 type AedoxyEnsureAccountRequest struct {
 	Subject     string `json:"subject"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
+	Username    string `json:"username"`
+}
+
+type AedoxyAccountStatusRequest struct {
+	Subject string `json:"subject"`
+	Enabled *bool  `json:"enabled"`
 }
 
 type AedoxyFulfillRequest struct {
@@ -41,7 +50,12 @@ func AedoxyEnsureAccount(c *gin.Context) {
 		return
 	}
 
-	user, created, err := model.EnsureAedoxyUser(req.Subject, req.Email, req.DisplayName)
+	if req.Username != "" && !aedoxyUsernamePattern.MatchString(req.Username) {
+		common.ApiErrorStatus(c, http.StatusBadRequest, errors.New("username must be 3-20 characters of a-z, 0-9 or _"))
+		return
+	}
+
+	user, created, err := model.EnsureAedoxyUser(req.Subject, req.Email, req.DisplayName, req.Username)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, model.ErrAedoxyProviderMissing) {
@@ -54,6 +68,54 @@ func AedoxyEnsureAccount(c *gin.Context) {
 		"user_id":  user.Id,
 		"username": user.Username,
 		"created":  created,
+	})
+}
+
+func AedoxyAccountStatus(c *gin.Context) {
+	var req AedoxyAccountStatusRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorStatus(c, http.StatusBadRequest, errors.New("invalid request body"))
+		return
+	}
+	if n := utf8.RuneCountInString(req.Subject); n < 1 || n > 256 {
+		common.ApiErrorStatus(c, http.StatusBadRequest, errors.New("subject must be 1-256 characters"))
+		return
+	}
+	if req.Enabled == nil {
+		common.ApiErrorStatus(c, http.StatusBadRequest, errors.New("enabled is required"))
+		return
+	}
+
+	user, changed, err := model.SetAedoxyUserEnabled(req.Subject, *req.Enabled)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, model.ErrAedoxyProviderMissing):
+			status = http.StatusServiceUnavailable
+		case errors.Is(err, model.ErrAedoxyUserNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, model.ErrAedoxyUserProtected):
+			status = http.StatusConflict
+		}
+		common.ApiErrorStatus(c, status, err)
+		return
+	}
+	if changed {
+		action := "disable"
+		if *req.Enabled {
+			action = "enable"
+		}
+		recordManageAuditFor(c, user.Id, "user.manage", map[string]any{
+			"action":   action,
+			"username": user.Username,
+			"id":       user.Id,
+			"source":   "aedoxy_bridge",
+		})
+	}
+	common.ApiSuccess(c, gin.H{
+		"user_id": user.Id,
+		"enabled": *req.Enabled,
+		"changed": changed,
 	})
 }
 
