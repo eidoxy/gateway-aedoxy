@@ -834,6 +834,12 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		path := t.TempDir() + "/audit.db"
 		db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 		require.NoError(t, err)
+		// Windows cannot remove the TempDir while the file is open; this runs first.
+		t.Cleanup(func() {
+			if connection, err := db.DB(); err == nil {
+				_ = connection.Close()
+			}
+		})
 		return db, path
 	}
 	require.NotEmpty(t, dsn)

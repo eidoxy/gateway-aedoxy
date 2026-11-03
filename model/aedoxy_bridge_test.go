@@ -377,3 +377,22 @@ func TestSetAedoxyUserEnabledProtectsAdministrators(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, changed)
 }
+
+func TestEnsureAedoxyUserReturnsBoundRootWithoutNewUser(t *testing.T) {
+	useAedoxyTestDB(t)
+	provider := seedAedoxyProvider(t)
+	root := seedAedoxyUser(t, "eidoxy", "root@example.com")
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", root.Id).Update("role", common.RoleRootUser).Error)
+	require.NoError(t, CreateUserOAuthBinding(&UserOAuthBinding{UserId: root.Id, ProviderId: provider.Id, ProviderUserId: "sub-root"}))
+
+	user, created, err := EnsureAedoxyUser("sub-root", "other@example.com", "Root", "other_name")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, root.Id, user.Id)
+	assert.Equal(t, common.RoleRootUser, user.Role)
+	assert.Equal(t, "eidoxy", user.Username)
+
+	var users int64
+	require.NoError(t, DB.Model(&User{}).Count(&users).Error)
+	assert.EqualValues(t, 1, users)
+}
