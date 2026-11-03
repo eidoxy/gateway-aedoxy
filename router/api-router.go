@@ -192,6 +192,7 @@ func SetApiRouter(router *gin.Engine) {
 			aedoxyRoute.POST("/accounts/ensure", controller.AedoxyEnsureAccount)
 			aedoxyRoute.POST("/accounts/status", controller.AedoxyAccountStatus)
 			aedoxyRoute.POST("/fulfill", controller.AedoxyFulfill)
+			aedoxyRoute.GET("/model-prices", controller.AedoxyModelPrices)
 		}
 
 		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")

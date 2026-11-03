@@ -329,6 +329,8 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	router.GET("/api/undeclared", UserAuth(), ok)
 	router.GET("/api/channel/", AdminAuth(), RequirePermission(authz.ChannelRead), ok)
 	router.GET("/api/pricing", TryUserAuth(), ok)
+	router.GET("/api/aedoxy/model-prices", AdminAuth(), ok)
+	billing, _ := createMiddlewareScopedToken(t, admin.Id, 0, "billing:read")
 
 	for _, test := range []struct {
 		name, path, token, code, reason string
@@ -340,6 +342,8 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 		{name: "session route", path: "/api/user/access_tokens", token: profile, status: http.StatusForbidden, code: "AUTH_SESSION_REQUIRED", reason: "session_required"},
 		{name: "permission route with its scope", path: "/api/channel/", token: channel, status: http.StatusOK},
 		{name: "permission route without its scope", path: "/api/channel/", token: profile, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "aedoxy model prices with billing:read", path: "/api/aedoxy/model-prices", token: billing, status: http.StatusOK},
+		{name: "aedoxy model prices without billing:read", path: "/api/aedoxy/model-prices", token: profile, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
 		{name: "expired token", path: "/api/user/self", token: expired, status: http.StatusUnauthorized, code: "ACCESS_TOKEN_EXPIRED", reason: "expired"},
 		{name: "legacy token before the deadline", path: "/api/user/self", token: legacy, status: http.StatusOK},
 		{name: "legacy token on a session route", path: "/api/user/access_tokens", token: legacy, status: http.StatusForbidden, code: "AUTH_SESSION_REQUIRED", reason: "session_required"},
@@ -366,6 +370,10 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 			}
 		})
 	}
+
+	anonymous := httptest.NewRecorder()
+	router.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/aedoxy/model-prices", nil))
+	assert.Equal(t, http.StatusUnauthorized, anonymous.Code, anonymous.Body.String())
 
 	// The token grant never widens the account: revoking the Casbin permission
 	// rejects a token that still carries the scope.

@@ -197,3 +197,29 @@ func TestAedoxyRootSurvivesPasswordLoginDisabled(t *testing.T) {
 	assert.Contains(t, restored.Body.String(), `"success":true`)
 	assert.Contains(t, restored.Body.String(), `"access_token"`)
 }
+
+func TestAedoxyModelPricesResponseShape(t *testing.T) {
+	previous := aedoxyGetPricing
+	t.Cleanup(func() { aedoxyGetPricing = previous })
+	aedoxyGetPricing = func() []model.Pricing {
+		return []model.Pricing{
+			{ModelName: "b", BillingMode: "tiered_expr", BillingExpr: `tier("base", p * 0.112 + c * 0.336)`},
+			{ModelName: "a", BillingMode: "ratio"},
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/aedoxy/model-prices", nil)
+	AedoxyModelPrices(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"success":true,"message":"","data":{"models":[{"model_name":"b","billing_mode":"tiered_expr","input_usd_per_m":0.112,"output_usd_per_m":0.336,"dynamic":false}]}}`, recorder.Body.String())
+
+	aedoxyGetPricing = func() []model.Pricing { return nil }
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/aedoxy/model-prices", nil)
+	AedoxyModelPrices(c)
+	assert.JSONEq(t, `{"success":true,"message":"","data":{"models":[]}}`, recorder.Body.String())
+}

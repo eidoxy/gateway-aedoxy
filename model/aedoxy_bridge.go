@@ -3,9 +3,14 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -299,4 +304,58 @@ func dbTimestampTx(tx *gorm.DB) int64 {
 		return common.GetTimestamp()
 	}
 	return ts
+}
+
+// AedoxyModelPrice is the base input/output price of an expression-priced model
+// in USD per 1M tokens, before any group ratio.
+type AedoxyModelPrice struct {
+	ModelName     string  `json:"model_name"`
+	BillingMode   string  `json:"billing_mode"`
+	InputUsdPerM  float64 `json:"input_usd_per_m"`
+	OutputUsdPerM float64 `json:"output_usd_per_m"`
+	Dynamic       bool    `json:"dynamic"`
+}
+
+// aedoxyPriceProbeTokens keeps `len` far below any context-tier threshold, so
+// tier conditions pick the short-context (base) price.
+const aedoxyPriceProbeTokens = 1000
+
+var (
+	aedoxyTimeFuncPattern  = regexp.MustCompile(`\b(?:hour|minute|weekday|month|day)\s*\(`)
+	aedoxyStringLiteralPat = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
+)
+
+// AedoxyExpressionModelPrices prices every expression-billed model with the
+// billing engine itself. Expression coefficients are USD per 1M tokens and the
+// result is linear in token counts, so result / probe tokens equals the
+// coefficient. The input slice is shared between goroutines and is not modified.
+// Expressions that cannot be priced as plain per-token rates (fixed per-request
+// prices, compile or run errors, non-finite or negative results) are skipped.
+// For time-dependent expressions the engine reads the current clock, so the
+// price is the one in effect at call time (Dynamic is true).
+func AedoxyExpressionModelPrices(pricing []Pricing) []AedoxyModelPrice {
+	prices := make([]AedoxyModelPrice, 0, len(pricing))
+	for _, entry := range pricing {
+		if entry.BillingMode != billing_setting.BillingModeTieredExpr || entry.BillingExpr == "" || billingexpr.UsesFixedPricing(entry.BillingExpr) {
+			continue
+		}
+		in, _, inErr := billingexpr.RunExpr(entry.BillingExpr, billingexpr.TokenParams{P: aedoxyPriceProbeTokens, Len: aedoxyPriceProbeTokens})
+		out, _, outErr := billingexpr.RunExpr(entry.BillingExpr, billingexpr.TokenParams{C: aedoxyPriceProbeTokens, Len: aedoxyPriceProbeTokens})
+		if inErr != nil || outErr != nil {
+			continue
+		}
+		in, out = math.Round(in/aedoxyPriceProbeTokens*1e9)/1e9, math.Round(out/aedoxyPriceProbeTokens*1e9)/1e9
+		if math.IsNaN(in) || math.IsInf(in, 0) || in < 0 || math.IsNaN(out) || math.IsInf(out, 0) || out < 0 {
+			continue
+		}
+		prices = append(prices, AedoxyModelPrice{
+			ModelName:     entry.ModelName,
+			BillingMode:   entry.BillingMode,
+			InputUsdPerM:  in,
+			OutputUsdPerM: out,
+			Dynamic:       aedoxyTimeFuncPattern.MatchString(aedoxyStringLiteralPat.ReplaceAllString(entry.BillingExpr, `""`)),
+		})
+	}
+	slices.SortFunc(prices, func(a, b AedoxyModelPrice) int { return strings.Compare(a.ModelName, b.ModelName) })
+	return prices
 }

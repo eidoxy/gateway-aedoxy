@@ -158,3 +158,12 @@ func AedoxyFulfill(c *gin.Context) {
 	}
 	common.ApiSuccess(c, result)
 }
+
+// aedoxyGetPricing is a variable only so tests can supply pricing without channels.
+var aedoxyGetPricing = model.GetPricing
+
+// AedoxyModelPrices returns the base input/output USD per 1M tokens of every
+// expression-priced model; the storefront applies group ratios itself.
+func AedoxyModelPrices(c *gin.Context) {
+	common.ApiSuccess(c, gin.H{"models": model.AedoxyExpressionModelPrices(aedoxyGetPricing())})
+}

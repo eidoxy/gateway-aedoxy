@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -395,4 +396,49 @@ func TestEnsureAedoxyUserReturnsBoundRootWithoutNewUser(t *testing.T) {
 	var users int64
 	require.NoError(t, DB.Model(&User{}).Count(&users).Error)
 	assert.EqualValues(t, 1, users)
+}
+
+func TestAedoxyExpressionModelPrices(t *testing.T) {
+	const peakExpr = `weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? tier("peak", p * 0.3 + cr * 0.006 + c * 1.2) : tier("off_peak", p * 0.15 + cr * 0.003 + c * 0.6)`
+	expr := func(name, billingExpr string) Pricing {
+		return Pricing{ModelName: name, BillingMode: "tiered_expr", BillingExpr: billingExpr}
+	}
+	input := []Pricing{
+		expr("zeta", `tier("base", p * 0.112 + c * 0.336 + cr * 0.00336)`),
+		expr("alpha", `tier("base", p * 0.025 + c * 0.125 + cr * 0.0125 + cc * 0.15625 + cc1h * 0.25)`),
+		expr("peak", peakExpr),
+		expr("ctx", `len <= 32000 ? tier("short", p * 1 + c * 2) : tier("long", p * 2 + c * 4)`),
+		expr("label-only", `tier("hour(day)", p * 1 + c * 2)`),
+		expr("broken", `tier("x", p *`),
+		expr("fixed", `tier("x", fixed(0.01))`),
+		expr("empty", ``),
+		{ModelName: "ratio", BillingMode: "ratio", BillingExpr: `tier("base", p * 1 + c * 2)`},
+	}
+	snapshot := slices.Clone(input)
+
+	got := AedoxyExpressionModelPrices(input)
+
+	assert.Equal(t, snapshot, input, "input must not be modified")
+	names := make([]string, 0, len(got))
+	for _, price := range got {
+		names = append(names, price.ModelName)
+	}
+	assert.Equal(t, []string{"alpha", "ctx", "label-only", "peak", "zeta"}, names)
+
+	byName := map[string]AedoxyModelPrice{}
+	for _, price := range got {
+		byName[price.ModelName] = price
+		assert.Equal(t, "tiered_expr", price.BillingMode)
+	}
+	assert.Equal(t, AedoxyModelPrice{ModelName: "zeta", BillingMode: "tiered_expr", InputUsdPerM: 0.112, OutputUsdPerM: 0.336}, byName["zeta"])
+	assert.Equal(t, AedoxyModelPrice{ModelName: "alpha", BillingMode: "tiered_expr", InputUsdPerM: 0.025, OutputUsdPerM: 0.125}, byName["alpha"])
+	assert.Equal(t, AedoxyModelPrice{ModelName: "ctx", BillingMode: "tiered_expr", InputUsdPerM: 1, OutputUsdPerM: 2}, byName["ctx"])
+	assert.False(t, byName["label-only"].Dynamic, "time function names inside string literals are not calls")
+
+	peak := byName["peak"]
+	assert.True(t, peak.Dynamic)
+	assert.Contains(t, []float64{0.3, 0.15}, peak.InputUsdPerM)
+	assert.Contains(t, []float64{1.2, 0.6}, peak.OutputUsdPerM)
+
+	assert.Empty(t, AedoxyExpressionModelPrices(nil))
 }
